@@ -35,6 +35,11 @@ type infoServer struct {
 	Version string
 }
 
+type TapDefinition struct {
+	Name string
+	MAC  string
+}
+
 func (s infoServer) Info(ctx context.Context, params *hooksInfo.InfoParams) (*hooksInfo.InfoResult, error) {
 	log.Log.Info("Info method has been called")
 
@@ -164,19 +169,15 @@ func onDefineDomain(vmiJSON []byte, domainXML []byte) ([]byte, error) {
 		log.Log.Reason(err).Errorf("Failed to unmarshal vmi json")
 	}
 
-	networkMap := namescheme.CreateHashedNetworkNameScheme(vmi.Spec.Networks)
 	macMap := generateNetworkMacMap(vmi)
+	log.Log.Infof("calculated mac map as %v", macMap)
 	for i, v := range domainSpec.Devices.Interfaces {
 		if v.MAC != nil && v.Target != nil {
 			log.Log.Infof("looking up interface %s", v.Target.Device)
-			networkName, ok := macMap[v.MAC.MAC]
+			newMacDetails, ok := macMap[v.Target.Device]
 			if ok {
-				hashedName, innerOK := networkMap[networkName]
-				if innerOK {
-					newTAPIfName := "tap" + hashedName[3:]
-					log.Log.Infof("updating tap interfaceName %s to %s", domainSpec.Devices.Interfaces[i].Target.Device, newTAPIfName)
-					domainSpec.Devices.Interfaces[i].Target.Device = "tap" + hashedName[3:]
-				}
+				log.Log.Infof("updating tap interface mac %s to %s", domainSpec.Devices.Interfaces[i].Target.Device, newMacDetails)
+				domainSpec.Devices.Interfaces[i].MAC.MAC = newMacDetails
 			}
 		}
 
@@ -188,14 +189,25 @@ func onDefineDomain(vmiJSON []byte, domainXML []byte) ([]byte, error) {
 	}
 
 	log.Log.Info("Successfully updated original domain spec with requested mac attributes")
+	log.Log.Infof("domain xml: %v", string(newDomainXML))
 
 	return newDomainXML, nil
 }
 
 func generateNetworkMacMap(vmi *kubevirtv1.VirtualMachineInstance) map[string]string {
+	networkMap := namescheme.CreateHashedNetworkNameScheme(vmi.Spec.Networks)
+	log.Log.Infof("network map generated hashed interface details :%v", networkMap)
 	networkMacMapping := make(map[string]string)
 	for _, v := range vmi.Status.Interfaces {
-		networkMacMapping[v.MAC] = v.Name
+		for _, n := range vmi.Spec.Networks {
+			if v.Name == n.Name && n.Multus != nil {
+				pod, ok := networkMap[n.Name]
+				if ok {
+					tapIfName := fmt.Sprintf("tap%s", pod[3:])
+					networkMacMapping[tapIfName] = v.MAC
+				}
+			}
+		}
 	}
 	return networkMacMapping
 }
